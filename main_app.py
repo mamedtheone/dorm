@@ -1,164 +1,308 @@
 """
-Streamlit frontend for Dorm-Net.
+main_app.py — Dorm-Net Central Controller
+==========================================
+Entry point: `streamlit run main_app.py`
 
-The app lets students:
-1. Pick a course.
-2. Upload PDFs for the local knowledge base.
-3. Upload photos of handwritten notes for OCR.
-4. Chat with a local Ollama model using retrieved course context.
+Wires together:
+  VisionEngine   (vision_module.py)
+  RAGManager     (brain_module.py)
+  PersonaManager (persona_module.py)
+  UI components  (ui_components.py)
+
+Async processing is handled via asyncio + ThreadPoolExecutor inside each
+module so the Streamlit event loop is never blocked for more than a frame.
 """
 
-from __future__ import annotations
-
-from pathlib import Path
+import asyncio
+import logging
+import os
 import tempfile
+from pathlib import Path
 
 import streamlit as st
 
-from modules.brain import KnowledgeBase
-from modules.ui import apply_dark_theme, render_hero_card, render_sources
-from modules.vision import extract_text
+# ── Module imports ────────────────────────────────────────────────────────
+from modules.vision_module  import VisionEngine
+from modules.brain_module   import RAGManager
+from modules.persona_module import PersonaManager, TutorRequest, Message
+from modules.ui_components  import (
+    init_session_state,
+    inject_css,
+    render_header,
+    render_sidebar,
+    render_ocr_panel,
+    render_rag_sources,
+    render_chat_message_native,
+    toast_success,
+    toast_error,
+    toast_info,
+)
 
+# ─────────────────────────────────────────────────────────────────────────── #
+#  Logging                                                                     #
+# ─────────────────────────────────────────────────────────────────────────── #
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
+)
+logger = logging.getLogger("dorm_net.main")
 
-# Page settings should be configured before other Streamlit UI calls.
-st.set_page_config(page_title="Dorm-Net", page_icon="📚", layout="wide")
+# ─────────────────────────────────────────────────────────────────────────── #
+#  Configuration                                                               #
+# ─────────────────────────────────────────────────────────────────────────── #
 
+DB_PATH = os.getenv("DORM_NET_DB_PATH", "./dorm_net_db")
+OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
+# On Windows, set this to your Tesseract install path:
+# e.g.  r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+TESSERACT_CMD = os.getenv("TESSERACT_CMD", None)
 
-def get_kb(course_name: str) -> KnowledgeBase:
-    """
-    Build or retrieve a course-specific knowledge base from Streamlit cache.
-    """
+# ─────────────────────────────────────────────────────────────────────────── #
+#  Module singletons (cached so Streamlit doesn't re-init on every rerun)     #
+# ─────────────────────────────────────────────────────────────────────────── #
 
-    return KnowledgeBase(course_name=course_name)
+@st.cache_resource(show_spinner="Loading AI engine… (first run only)")
+def get_rag_manager() -> RAGManager:
+    return RAGManager(db_path=DB_PATH)
 
 
 @st.cache_resource(show_spinner=False)
-def cached_kb(course_name: str) -> KnowledgeBase:
-    return get_kb(course_name)
+def get_persona_manager() -> PersonaManager:
+    return PersonaManager(ollama_url=OLLAMA_URL,
+                          default_model="llama3.2:3b")
 
 
-def initialize_state() -> None:
+@st.cache_resource(show_spinner=False)
+def get_vision_engine() -> VisionEngine:
+    return VisionEngine(tesseract_cmd=TESSERACT_CMD)
+
+
+# ─────────────────────────────────────────────────────────────────────────── #
+#  Async helpers                                                               #
+# ─────────────────────────────────────────────────────────────────────────── #
+
+def run_async(coro):
     """
-    Prepare Streamlit session keys used throughout the app.
+    Safely run an async coroutine from synchronous Streamlit context.
+    Creates a new event loop if one isn't running.
     """
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            import concurrent.futures
+            future = asyncio.ensure_future(coro, loop=loop)
+            return concurrent.futures.Future()  # fallback: run sync
+        return loop.run_until_complete(coro)
+    except RuntimeError:
+        return asyncio.run(coro)
 
-    if "messages" not in st.session_state:
-        st.session_state.messages = []
-    if "latest_ocr_text" not in st.session_state:
-        st.session_state.latest_ocr_text = ""
-    if "last_course" not in st.session_state:
-        st.session_state.last_course = "Calculus"
+
+# ─────────────────────────────────────────────────────────────────────────── #
+#  Event handlers                                                              #
+# ─────────────────────────────────────────────────────────────────────────── #
+
+def handle_pdf_upload(uploaded_file):
+    """Save uploaded PDF to a temp file, then ingest asynchronously."""
+    rag = get_rag_manager()
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+        tmp.write(uploaded_file.read())
+        tmp_path = tmp.name
+
+    with st.spinner(f"Indexing '{uploaded_file.name}'…"):
+        report = asyncio.run(rag.ingest_pdf_async(tmp_path))
+
+    os.unlink(tmp_path)
+
+    if report.success:
+        if report.skipped:
+            toast_info(f"'{uploaded_file.name}' already indexed — skipped.")
+        else:
+            toast_success(
+                f"✅ Indexed '{uploaded_file.name}': "
+                f"{report.total_pages} pages, {report.total_chunks} chunks."
+            )
+    else:
+        toast_error(f"Failed to index: {report.error}")
+
+    # Refresh sidebar state
+    _refresh_db_state(rag)
 
 
-def reset_chat_if_course_changed(course_name: str) -> None:
+def handle_image_upload(image_bytes: bytes):
+    """Run OCR pipeline on uploaded image bytes."""
+    vision = get_vision_engine()
+    with st.spinner("Scanning handwriting…"):
+        result = asyncio.run(vision.extract_text_async(image_bytes))
+
+    st.session_state["ocr_result"] = result
+    if result.success:
+        toast_success(f"OCR complete — {result.word_count} words extracted.")
+    else:
+        toast_error(f"OCR failed: {result.error}")
+
+
+def handle_clear_chat():
+    st.session_state["messages"] = []
+    st.session_state["ocr_result"] = None
+    st.session_state["use_ocr_in_next_query"] = False
+    st.session_state["last_rag_sources"] = []
+    toast_info("Chat cleared.")
+
+
+# ─────────────────────────────────────────────────────────────────────────── #
+#  Core: generate answer                                                       #
+# ─────────────────────────────────────────────────────────────────────────── #
+
+def generate_answer(user_question: str):
     """
-    Keep chat history separate per course so responses stay relevant.
+    Full pipeline:
+      1. Retrieve relevant RAG chunks (async)
+      2. Build TutorRequest with history + context
+      3. Stream LLM response token-by-token into the UI
+      4. Save assistant message to session state
     """
+    rag     = get_rag_manager()
+    persona = get_persona_manager()
 
-    if st.session_state.last_course != course_name:
-        st.session_state.messages = []
-        st.session_state.latest_ocr_text = ""
-        st.session_state.last_course = course_name
+    # ── 1. RAG retrieval ────────────────────────────────────────────────
+    rag_context: list[str] = []
+    rag_sources: list[dict] = []
+
+    if rag.get_chunk_count() > 0:
+        retrieval = asyncio.run(rag.query_async(user_question, top_k=4))
+        if retrieval.success and retrieval.chunks:
+            rag_context = [c.text for c in retrieval.chunks]
+            rag_sources = [
+                {"source": c.source, "page": c.page, "snippet": c.text}
+                for c in retrieval.chunks
+            ]
+
+    # ── 2. Build request ────────────────────────────────────────────────
+    history = [
+        Message(role=m["role"], content=m["content"])
+        for m in st.session_state.messages[-10:]
+    ]
+
+    ocr_text = None
+    if st.session_state.get("use_ocr_in_next_query"):
+        ocr_result = st.session_state.get("ocr_result")
+        if ocr_result and ocr_result.success:
+            ocr_text = ocr_result.raw_text
+        st.session_state["use_ocr_in_next_query"] = False
+
+    request = TutorRequest(
+        user_question=user_question,
+        rag_context=rag_context,
+        ocr_text=ocr_text,
+        history=history,
+        subject_hint=st.session_state.get("subject_hint", "general"),
+        model=st.session_state.get("selected_model", "llama3.2:3b"),
+    )
+
+    # ── 3. Stream response ──────────────────────────────────────────────
+    full_answer = ""
+    with st.chat_message("assistant"):
+        placeholder = st.empty()
+        for token in persona.stream(request):
+            full_answer += token
+            placeholder.markdown(full_answer + "▌")   # blinking cursor effect
+        placeholder.markdown(full_answer)             # final render (no cursor)
+
+    # ── 4. Persist to history ───────────────────────────────────────────
+    st.session_state.messages.append({"role": "assistant", "content": full_answer})
+    st.session_state["last_rag_sources"] = rag_sources
+
+    return rag_sources
 
 
-def main() -> None:
-    """
-    Main Streamlit application flow.
-    """
+# ─────────────────────────────────────────────────────────────────────────── #
+#  State helpers                                                               #
+# ─────────────────────────────────────────────────────────────────────────── #
 
-    apply_dark_theme()
-    initialize_state()
+def _refresh_db_state(rag: RAGManager):
+    st.session_state["db_chunk_count"] = rag.get_chunk_count()
+    st.session_state["indexed_docs"]   = rag.list_indexed_docs()
 
-    with st.sidebar:
-        st.title("Dorm-Net")
-        st.caption("Offline AI study assistant for AASTU students")
 
-        selected_course = st.selectbox(
-            "Choose a course",
-            ["Calculus", "DSA", "Physics"],
-            index=0,
-        )
+def _refresh_ollama_state(persona: PersonaManager):
+    st.session_state["ollama_online"] = persona.is_ollama_running()
 
-        reset_chat_if_course_changed(selected_course)
-        kb = cached_kb(selected_course)
 
-        st.markdown("---")
-        st.subheader("Upload Course PDF")
-        pdf_file = st.file_uploader(
-            "Add lecture notes or handouts",
-            type=["pdf"],
-            key=f"pdf_{selected_course}",
-        )
+# ─────────────────────────────────────────────────────────────────────────── #
+#  Main                                                                        #
+# ─────────────────────────────────────────────────────────────────────────── #
 
-        if pdf_file is not None:
-            if st.button("Ingest PDF into Knowledge Base", use_container_width=True):
-                with st.spinner("Reading and indexing the PDF locally..."):
-                    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_pdf:
-                        temp_pdf.write(pdf_file.getbuffer())
-                        temp_pdf_path = temp_pdf.name
+def main():
+    # ── Page config (must be first Streamlit call) ──────────────────────
+    st.set_page_config(
+        page_title="Dorm-Net · AASTU AI Tutor",
+        page_icon="🎓",
+        layout="wide",
+        initial_sidebar_state="expanded",
+    )
 
-                    saved_chunks = kb.ingest_pdf(temp_pdf_path, source_label=pdf_file.name)
-                    Path(temp_pdf_path).unlink(missing_ok=True)
+    # ── Inject CSS + init state ─────────────────────────────────────────
+    inject_css()
+    init_session_state()
 
-                if saved_chunks > 0:
-                    st.success(f"Stored {saved_chunks} chunks from {pdf_file.name}.")
-                else:
-                    st.warning("No readable text was found in that PDF.")
+    # ── Load modules ────────────────────────────────────────────────────
+    rag     = get_rag_manager()
+    persona = get_persona_manager()
 
-        st.markdown("---")
-        st.subheader("Upload Handwritten Notes")
-        note_image = st.file_uploader(
-            "Add a photo of class notes",
-            type=["png", "jpg", "jpeg"],
-            key=f"notes_{selected_course}",
-        )
+    # ── Refresh live status (cheap; runs every rerun) ───────────────────
+    _refresh_db_state(rag)
+    _refresh_ollama_state(persona)
 
-        if note_image is not None:
-            st.image(note_image, caption="Uploaded handwritten note", use_container_width=True)
+    available_models = persona.list_available_models()
 
-            if st.button("Extract and Save Notes", use_container_width=True):
-                with st.spinner("Running OCR locally with OpenCV + Tesseract..."):
-                    image_bytes = note_image.read()
-                    extracted_text = extract_text(image_bytes)
-                    st.session_state.latest_ocr_text = extracted_text
-                    saved_chunks = kb.ingest_text(extracted_text, source_label=note_image.name)
+    # ── Sidebar ─────────────────────────────────────────────────────────
+    render_sidebar(
+        available_models=available_models,
+        on_pdf_upload=handle_pdf_upload,
+        on_clear_chat=handle_clear_chat,
+    )
 
-                if extracted_text:
-                    st.success(f"OCR complete. Stored {saved_chunks} note chunks.")
-                    st.text_area(
-                        "Extracted note text",
-                        extracted_text,
-                        height=180,
-                    )
-                else:
-                    st.warning("OCR finished, but no readable text was detected.")
+    # ── Main area: header + OCR panel ────────────────────────────────────
+    render_header()
+    render_ocr_panel(on_image_upload=handle_image_upload)
 
-        st.markdown("---")
+    # ── Chat history ─────────────────────────────────────────────────────
+    for msg in st.session_state.messages:
+        render_chat_message_native(msg["role"], msg["content"])
+
+    # ── RAG source display (last answer) ─────────────────────────────────
+    if st.session_state.get("last_rag_sources"):
+        render_rag_sources(st.session_state["last_rag_sources"])
+
+    # ── Offline notice ───────────────────────────────────────────────────
+    if not st.session_state.get("ollama_online"):
         st.info(
-            "Make sure Ollama is running locally and the `llama3.2` model is installed."
+            "**Ollama is not running.** Start it with `ollama serve` "
+            "in a terminal, then refresh this page.",
+            icon="🔌",
         )
 
-    render_hero_card(selected_course)
+    # ── Chat input ───────────────────────────────────────────────────────
+    if user_input := st.chat_input(
+        "Ask Kebede anything… (e.g. 'Explain Kirchhoff's Voltage Law step by step')",
+        disabled=st.session_state.get("is_processing", False),
+    ):
+        # Save user message
+        st.session_state.messages.append({"role": "user", "content": user_input})
+        render_chat_message_native("user", user_input)
 
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
+        # Generate answer
+        st.session_state["is_processing"] = True
+        try:
+            rag_sources = generate_answer(user_input)
+        finally:
+            st.session_state["is_processing"] = False
 
-    prompt = st.chat_input(f"Ask a {selected_course} question...")
-    if prompt:
-        st.session_state.messages.append({"role": "user", "content": prompt})
+        # Show sources inline after the answer
+        if rag_sources:
+            render_rag_sources(rag_sources)
 
-        with st.chat_message("user"):
-            st.markdown(prompt)
-
-        with st.chat_message("assistant"):
-            with st.spinner("Thinking locally with Ollama..."):
-                result = kb.query(prompt)
-                st.markdown(result.answer)
-
-            render_sources(result.sources)
-
-        st.session_state.messages.append({"role": "assistant", "content": result.answer})
+        st.rerun()
 
 
 if __name__ == "__main__":
