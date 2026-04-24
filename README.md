@@ -1,212 +1,163 @@
-# 🎓 Dorm-Net
+# Dorm-Net
 
-### Offline-First AI Peer Tutor for AASTU Students
+Dorm-Net is an offline-first AI tutor for engineering study. It combines:
 
-Dorm-Net is a **local-first AI assistant** built for students at Addis Ababa Science and Technology University (AASTU). It allows continuous studying, revision, and concept clarification **without internet access**, using local large language models and intelligent document retrieval.
+- Ollama for fully local LLM inference
+- ChromaDB plus `all-MiniLM-L6-v2` for RAG
+- PyMuPDF for PDF ingestion
+- Tesseract plus OpenCV for optional OCR of handwritten notes
 
----
+After setup, normal tutoring flows run without external APIs.
 
-## ✨ Features
+## Folder Structure
 
-### 🔌 Offline-First by Design
-
-Runs entirely on your machine using **Ollama**, ensuring:
-
-* No internet dependency
-* Full privacy
-* Fast, low-latency responses
-
-### 📚 Retrieval-Augmented Generation (RAG)
-
-* Upload textbooks and PDFs
-* Automatically index them into a local vector database (ChromaDB)
-* Get answers grounded in your own study materials
-
-### ✍️ Handwritten Notes OCR
-
-* Upload images of your notes
-* Extract and process text using **Tesseract + OpenCV**
-* Supports preprocessing (denoising, deskewing, contrast enhancement)
-
-### 🧠 AASTU Tutor Persona ("Kebede")
-
-* Friendly senior-student-style explanations
-* Uses structured reasoning (Chain-of-Thought)
-* Focused on clarity and exam understanding
-
-### ⚡ Async Processing
-
-* Smooth Streamlit UI
-* Non-blocking operations during:
-
-  * PDF ingestion
-  * Model inference
-
----
-
-## 🏗️ Architecture Overview
-
-**Frontend**
-
-* Streamlit (custom dark mode UI)
-
-**Core Intelligence (RAG System)**
-
-* ChromaDB (vector storage)
-* sentence-transformers (CPU-friendly embeddings)
-
-**Vision Pipeline**
-
-* PyTesseract
-* OpenCV preprocessing pipeline
-
-**LLM Engine**
-
-* Ollama (local model orchestration)
-* Example model: `llama3.2:3b`
-
----
-
-## 🚀 Getting Started
-
-### ✅ Prerequisites
-
-* Python 3.10+
-* Ollama (installed and running)
-* Tesseract OCR
-
-#### Install Tesseract
-
-**Windows:**
-Install via UB-Mannheim build
-
-**Linux:**
-
-```bash
-sudo apt-get install tesseract-ocr
+```text
+dorm/
+├── app.py
+├── main_app.py
+├── requirements.txt
+├── dorm_net_db/
+└── modules/
+    ├── brain_module.py
+    ├── persona_module.py
+    ├── tutor_controller.py
+    ├── ui_components.py
+    └── vision_module.py
 ```
 
----
+## Core Features
 
-### ⚙️ Installation
+- Offline Ollama-only tutor engine
+- Selectable personas:
+  - Software Engineering Tutor
+  - Mechanical Engineering Tutor
+  - Electrical Engineering Tutor
+  - Math Tutor
+  - Explain Like I'm 12
+- Adaptive explanation depth
+- Step-by-step mode toggle
+- Session memory using recent turns
+- Grounded answers from uploaded PDFs
+- Debug mode with retrieved sources and scores
+- Quiz generation from retrieved material
+- Concept breakdown mode
+- Error diagnosis mode
+- Lightweight note generation mode
 
-Clone the repository:
+## Setup
 
-```bash
-git clone https://github.com/yourusername/dorm-net.git
-cd dorm-net
+### 1. Create and activate a virtual environment
+
+Windows:
+
+```powershell
+python -m venv venv
+.\venv\Scripts\activate
 ```
 
-Create virtual environment:
+Linux/macOS:
 
 ```bash
 python -m venv venv
-source venv/bin/activate   # Linux/Mac
-# venv\Scripts\activate    # Windows
+source venv/bin/activate
 ```
 
-Install dependencies:
+### 2. Install Python dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
 
----
+### 3. Install Ollama
 
-### 🤖 Set Up the Model
-
-Start Ollama:
+Install Ollama from the official installer for your OS, then start it:
 
 ```bash
 ollama serve
 ```
 
-Pull the required model:
+### 4. Pull a local model
+
+Recommended for 8GB RAM:
 
 ```bash
-ollama pull llama3.2:3b
+ollama pull mistral:latest
 ```
 
----
+Alternative lighter model:
 
-### ▶️ Run the Application
+```bash
+ollama pull phi3:latest
+```
+
+If you want coding-heavy behavior, you can also use:
+
+```bash
+ollama pull qwen2.5-coder:7b
+```
+
+### 5. Optional OCR setup
+
+Install Tesseract OCR and, if needed, set:
+
+```powershell
+$env:TESSERACT_CMD="C:\Program Files\Tesseract-OCR\tesseract.exe"
+```
+
+Or on Linux/macOS:
+
+```bash
+export TESSERACT_CMD=/usr/bin/tesseract
+```
+
+## Run Instructions
+
+### Streamlit UI
 
 ```bash
 streamlit run main_app.py
 ```
 
----
+### CLI
 
-## 📂 Project Structure
+Interactive mode:
 
-```
-dorm-net/
-│
-├── main_app.py              # Entry point (Streamlit app)
-│
-├── modules/
-│   ├── brain_module.py      # RAG system & vector DB
-│   ├── vision_module.py     # OCR + preprocessing pipeline
-│   ├── persona_module.py    # Prompt engineering & LLM calls
-│   ├── ui_components.py     # UI elements & styling
-│
-└── requirements.txt
+```bash
+python app.py
 ```
 
----
+Single question:
 
-## 👥 Team
+```bash
+python app.py --question "Explain Kirchhoff's current law"
+```
 
-Built with collaboration and late-night debugging sessions by:
+Index PDFs first:
 
-* mamedtheone
-* Haregeweyn Tewabe
-* Natidev
-* Wassie Tesfaye
-* yaredmihretthe1st
+```bash
+python app.py --ingest path/to/book.pdf
+```
 
----
+Use a different persona or mode:
 
-## 🤝 Contributing
+```bash
+python app.py --persona electrical --mode concept_breakdown --question "Explain RC charging"
+```
 
-Dorm-Net is built **for students, by students**.
+## Notes on Performance
 
-Ways to contribute:
+- Keep one Ollama model loaded at a time on 8GB RAM systems.
+- `mistral:latest` is the default.
+- Smaller models like `phi3:latest` may feel more responsive on low-memory setups.
+- ChromaDB storage is persistent in `dorm_net_db/`.
+- PDF ingestion is page-by-page to reduce memory spikes.
 
-* Improve OCR accuracy
-* Optimize embedding performance
-* Enhance UI/UX
-* Add new study features
+## Environment Variables
 
-Feel free to:
+Optional:
 
-* Open issues
-* Submit pull requests
+- `OLLAMA_URL`
+- `DORM_NET_DB_PATH`
+- `TESSERACT_CMD`
 
----
-
-## 🌱 Vision
-
-Dorm-Net aims to become a **fully offline academic companion**, especially valuable in environments with limited internet access. The goal is simple:
-
-> Make learning uninterrupted, personal, and powerful.
-
----
-
-## 📜 License
-
-Add your license here (MIT recommended)
-
----
-
-## 💡 Future Ideas
-
-* Voice input/output 🎙️
-* Multi-language support (Amharic + English)
-* Quiz generation from PDFs
-* Spaced repetition system
-* Mobile version
-
----
-
-Built with curiosity, caffeine, and a refusal to depend on WiFi ☕🚫📶
+No cloud API keys are required.
