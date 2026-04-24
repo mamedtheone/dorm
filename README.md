@@ -1,87 +1,163 @@
-# Dorm-Net 🎓
+# Dorm-Net
 
-**An Offline-First AI Peer Tutor for AASTU Students**
+Dorm-Net is an offline-first AI tutor for engineering study. It combines:
 
-Dorm-Net is an innovative, local-first artificial intelligence assistant designed specifically for AASTU students to continue learning and revising course materials even when internet connectivity is unreliable or completely unavailable. 
+- Ollama for fully local LLM inference
+- ChromaDB plus `all-MiniLM-L6-v2` for RAG
+- PyMuPDF for PDF ingestion
+- Tesseract plus OpenCV for optional OCR of handwritten notes
 
-By leveraging cutting-edge open-source AI models and local vector search, Dorm-Net provides a seamless educational experience right from your dorm room.
+After setup, normal tutoring flows run without external APIs.
 
-## ✨ Features
+## Folder Structure
 
-- **Offline-First Architecture**: Runs completely locally using [Ollama](https://ollama.com/), meaning no internet connection is required once installed.
-- **RAG (Retrieval-Augmented Generation)**: Uses a local ChromaDB instance to search through uploaded course materials (PDFs) and provide highly accurate, context-aware answers.
-- **Handwritten Notes Digitization**: Incorporates a built-in OCR (Optical Character Recognition) pipeline powered by Tesseract to scan, read, and understand handwritten notes.
-- **Custom Personas**: Meet your virtual peer tutor! The system orchestrates responses prioritizing academic context and structured learning.
-- **User-Friendly Interface**: Built with [Streamlit](https://streamlit.io/), offering a clean, responsive, and easy-to-use web UI.
+```text
+dorm/
+├── app.py
+├── main_app.py
+├── requirements.txt
+├── dorm_net_db/
+└── modules/
+    ├── brain_module.py
+    ├── persona_module.py
+    ├── tutor_controller.py
+    ├── ui_components.py
+    └── vision_module.py
+```
 
-## 🏗️ Architecture
+## Core Features
 
-- **Frontend UI & Controller**: `main_app.py` & Streamlit.
-- **Offline Brain / RAG Server**: `modules/brain_module.py` (Local ChromaDB + Sentence Transformers).
-- **Vision Pipeline**: `modules/vision_module.py` (OpenCV, MediaPipe & PyTesseract).
-- **LLM Engine**: `modules/persona_module.py` (Ollama running `llama3.2:3b` or similar local models).
-- **Batch Ingestion Script**: `ingest_notes.py`.
+- Offline Ollama-only tutor engine
+- Selectable personas:
+  - Software Engineering Tutor
+  - Mechanical Engineering Tutor
+  - Electrical Engineering Tutor
+  - Math Tutor
+  - Explain Like I'm 12
+- Adaptive explanation depth
+- Step-by-step mode toggle
+- Session memory using recent turns
+- Grounded answers from uploaded PDFs
+- Debug mode with retrieved sources and scores
+- Quiz generation from retrieved material
+- Concept breakdown mode
+- Error diagnosis mode
+- Lightweight note generation mode
 
-## 🚀 Getting Started
+## Setup
 
-### Prerequisites
+### 1. Create and activate a virtual environment
 
-1.  **Python 3.10+** (Tested on Windows 10/11 & Ubuntu 22.04)
-2.  **Ollama**: Install from [ollama.com](https://ollama.com)
-3.  **Tesseract OCR** (For reading handwritten notes)
-    *   **Windows**: Download installer from [UB-Mannheim](https://github.com/UB-Mannheim/tesseract/wiki) and make sure to add it to your system PATH or configure `TESSERACT_CMD` in `.env`.
-    *   **Linux**: `sudo apt-get install tesseract-ocr`
+Windows:
 
-### Installation
+```powershell
+python -m venv venv
+.\venv\Scripts\activate
+```
 
-1.  **Clone the repository:**
-    ```bash
-    git clone https://github.com/yourusername/dorm-net.git
-    cd dorm-net
-    ```
+Linux/macOS:
 
-2.  **Create a virtual environment:**
-    ```bash
-    python -m venv venv
-    # For Windows:
-    venv\Scripts\activate
-    # For Linux/Mac:
-    source venv/bin/activate
-    ```
+```bash
+python -m venv venv
+source venv/bin/activate
+```
 
-3.  **Install Python dependencies:**
-    ```bash
-    pip install -r requirements.txt
-    ```
+### 2. Install Python dependencies
 
-4.  **Pull the offline Language Model:**
-    Make sure Ollama is running (`ollama serve`), then pull the model you intend to use.
-    ```bash
-    ollama pull llama3.2:3b
-    ```
+```bash
+pip install -r requirements.txt
+```
 
-### Running the App
+### 3. Install Ollama
 
-1.  Start the Streamlit application:
-    ```bash
-    streamlit run main_app.py
-    ```
-2.  Open your browser and navigate to the provided localhost URL (usually `http://localhost:8501`).
+Install Ollama from the official installer for your OS, then start it:
 
-## ⚙️ Configuration
+```bash
+ollama serve
+```
 
-Dorm-Net relies on a few configuration options which can be set in an `.env` file or environment variables:
+### 4. Pull a local model
 
-- `DORM_NET_DB_PATH`: Path to the local Chroma DB directory (default: `./dorm_net_db`).
-- `OLLAMA_URL`: Local URL for the Ollama inference server (default: `http://localhost:11434`).
-- `TESSERACT_CMD`: Absolute path to `tesseract.exe` (only needed on Windows if not added to PATH).
+Recommended for 8GB RAM:
 
-## 📄 How It Works
+```bash
+ollama pull mistral:latest
+```
 
-1.  **Upload Documents**: Via the Streamlit sidebar, upload your PDF course materials or textbooks. Dorm-Net will split, chunk, embed, and store them securely in its local vector database.
-2.  **Scan Handwritten Notes**: Use the OCR panel to upload images of your handwritten notes for text extraction and real-time comprehension.
-3.  **Ask Questions**: Submit complex queries to the tutor chat. The `RAGManager` pulls the most relevant sources from your textbooks while the `PersonaManager` orchestrates an educational, step-by-step guidance response from the local LLM.
+Alternative lighter model:
 
-## 🤝 Contributing
+```bash
+ollama pull phi3:latest
+```
 
-Contributions are welcome! If you're a student at AASTU or just passionate about building better offline ed-tech tools, feel free to open a pull request or submit issues for new features (e.g., more robust OCR models, better math LaTeX rendering, support for more languages).
+If you want coding-heavy behavior, you can also use:
+
+```bash
+ollama pull qwen2.5-coder:7b
+```
+
+### 5. Optional OCR setup
+
+Install Tesseract OCR and, if needed, set:
+
+```powershell
+$env:TESSERACT_CMD="C:\Program Files\Tesseract-OCR\tesseract.exe"
+```
+
+Or on Linux/macOS:
+
+```bash
+export TESSERACT_CMD=/usr/bin/tesseract
+```
+
+## Run Instructions
+
+### Streamlit UI
+
+```bash
+streamlit run main_app.py
+```
+
+### CLI
+
+Interactive mode:
+
+```bash
+python app.py
+```
+
+Single question:
+
+```bash
+python app.py --question "Explain Kirchhoff's current law"
+```
+
+Index PDFs first:
+
+```bash
+python app.py --ingest path/to/book.pdf
+```
+
+Use a different persona or mode:
+
+```bash
+python app.py --persona electrical --mode concept_breakdown --question "Explain RC charging"
+```
+
+## Notes on Performance
+
+- Keep one Ollama model loaded at a time on 8GB RAM systems.
+- `mistral:latest` is the default.
+- Smaller models like `phi3:latest` may feel more responsive on low-memory setups.
+- ChromaDB storage is persistent in `dorm_net_db/`.
+- PDF ingestion is page-by-page to reduce memory spikes.
+
+## Environment Variables
+
+Optional:
+
+- `OLLAMA_URL`
+- `DORM_NET_DB_PATH`
+- `TESSERACT_CMD`
+
+No cloud API keys are required.

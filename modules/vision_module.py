@@ -42,7 +42,7 @@ class VisionEngine:
     # ---------------------- Public API ---------------------- #
 
     async def extract_text_async(self, image_input) -> OCRResult:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         return await loop.run_in_executor(_executor, self.extract_text, image_input)
 
     def extract_text(self, image_input) -> OCRResult:
