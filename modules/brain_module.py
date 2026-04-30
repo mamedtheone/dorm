@@ -7,6 +7,8 @@ Changes from v1:
   - Hybrid retrieval: vector + BM25 fused with Reciprocal Rank Fusion (RRF)
   - Quiz generation: 3 MCQs + 2 short-answer questions from retrieved context
 """
+import re
+import random  # <--- ADD THIS LINE
 
 import asyncio
 import shutil
@@ -417,13 +419,14 @@ class RAGManager:
             )
 
     def generate_quiz(self, topic: str, n_questions: int = 5) -> list:
-        retrieval = self.query(topic, top_k=max(n_questions, 5))
+        retrieval = self.query(topic, top_k=max(n_questions*3, 15))
         if not retrieval.success or not retrieval.chunks:
             return []
 
         sentence_bank = self._build_sentence_bank(retrieval.chunks)
         if not sentence_bank:
             return []
+        random.shuffle(sentence_bank)
 
         questions: list[QuizQuestion] = []
 
@@ -437,7 +440,7 @@ class RAGManager:
                 continue
 
             options = [item["sentence"]] + distractors[:3]
-            options.sort(key=lambda option: hashlib.md5(option.encode("utf-8")).hexdigest())
+            random.shuffle(options)
             answer_index = options.index(item["sentence"])
             questions.append(
                 QuizQuestion(
